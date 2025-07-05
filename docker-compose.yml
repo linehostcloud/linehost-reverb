@@ -1,0 +1,178 @@
+version: '3.8'
+
+services:
+  # Laravel Reverb Application
+  laraverb:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: laraverb-app
+    restart: unless-stopped
+    ports:
+      - "80:80"     # Nginx web server
+      - "443:443"   # HTTPS
+      - "8080:8080" # Laravel Reverb WebSocket
+    environment:
+      - APP_ENV=production
+      - APP_DEBUG=false
+      - DB_HOST=mysql
+      - DB_DATABASE=laravel
+      - DB_USERNAME=laravel
+      - DB_PASSWORD=secret
+      - REDIS_HOST=redis
+      - REVERB_APP_ID=app-id
+      - REVERB_APP_KEY=app-key
+      - REVERB_APP_SECRET=app-secret
+      - AUTO_MIGRATE=true
+    volumes:
+      - laravel_storage:/var/www/html/storage
+      - laravel_bootstrap_cache:/var/www/html/bootstrap/cache
+      - certbot_certs:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - laraverb-network
+    healthcheck:
+      test: ["CMD-SHELL", "/usr/local/bin/healthcheck-reverb.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Certbot service for SSL certificates
+  certbot:
+    image: certbot/certbot
+    container_name: laraverb-certbot
+    volumes:
+      - certbot_certs:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+    command: certonly --webroot -w /var/www/certbot --email your-email@example.com --agree-tos --no-eff-email -d pusher.linehost.pro
+    networks:
+      - laraverb-network
+    depends_on:
+      - laraverb
+
+  # MySQL Database
+  mysql:
+    image: mysql:8.0
+    container_name: laraverb-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: laravel
+      MYSQL_USER: laravel
+      MYSQL_PASSWORD: secret
+    volumes:
+      - mysql_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    networks:
+      - laraverb-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Redis Cache & Session Store
+  redis:
+    image: redis:7-alpine
+    container_name: laraverb-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - laraverb-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Nginx Load Balancer (optional, for multiple app instances)
+  nginx-lb:
+    image: nginx:alpine
+    container_name: laraverb-nginx-lb
+    restart: unless-stopped
+    ports:
+      - "8000:80"
+    volumes:
+      - ./nginx-lb.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - laraverb
+    networks:
+      - laraverb-network
+    profiles:
+      - load-balancer
+
+  # Development tools
+  mailpit:
+    image: axllent/mailpit
+    container_name: laraverb-mailpit
+    restart: unless-stopped
+    ports:
+      - "8025:8025" # Web interface
+      - "1025:1025" # SMTP
+    networks:
+      - laraverb-network
+    profiles:
+      - development
+
+  # Database administration
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    container_name: laraverb-phpmyadmin
+    restart: unless-stopped
+    environment:
+      PMA_HOST: mysql
+      PMA_USER: laravel
+      PMA_PASSWORD: secret
+    ports:
+      - "8081:80"
+    depends_on:
+      - mysql
+    networks:
+      - laraverb-network
+    profiles:
+      - development
+
+  # Redis administration
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: laraverb-redis-commander
+    restart: unless-stopped
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    ports:
+      - "8082:8081"
+    depends_on:
+      - redis
+    networks:
+      - laraverb-network
+    profiles:
+      - development
+
+volumes:
+  mysql_data:
+    driver: local
+  redis_data:
+    driver: local
+  laravel_storage:
+    driver: local
+  laravel_bootstrap_cache:
+    driver: local
+  certbot_certs:
+  certbot_www:
+
+networks:
+  laraverb-network:
+    driver: bridge
+
