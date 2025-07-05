@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # Cores para a saída do terminal
-RED='\033[0;31m\'
-GREEN='\033[0;32m\'
-YELLOW='\033[0;33m\'
-BLUE='\033[0;34m\'
-NC='\033[0m\'
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
 
 # Função para exibir mensagens de status
 log_info() {
@@ -36,7 +36,7 @@ install_docker() {
         sudo install -m 0755 -d /etc/apt/keyrings
         curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
         sudo chmod a+r /etc/apt/keyrings/docker.gpg
-        echo "deb [arch=\"$(dpkg --print-architecture)\"] signed-by=/etc/apt/keyrings/docker.gpg https://download.docker.com/linux/ubuntu \"$(. /etc/os-release && echo "$VERSION_CODENAME")\" stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+        echo "deb [arch=\"$(dpkg --print-architecture)\" signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \"$(. /etc/os-release && echo "$VERSION_CODENAME")\" stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
         sudo apt update
         sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
         
@@ -89,7 +89,7 @@ configure_project_and_ssl() {
     fi
 
     # Solicitar domínio do projeto
-    read -p "${YELLOW}Digite o domínio do seu projeto (ex: example.com ou sub.example.com): ${NC}" PROJECT_DOMAIN
+    read -p "$(echo -e "${YELLOW}Digite o domínio do seu projeto (ex: example.com ou sub.example.com): ${NC}")" PROJECT_DOMAIN
     if [ -z "$PROJECT_DOMAIN" ]; then
         log_error "Domínio do projeto não pode ser vazio. Saindo."
         exit 1
@@ -182,39 +182,39 @@ configure_project_and_ssl() {
 
 # Função para exibir informações finais
 display_final_info() {
-    log_info "\n===================================================="
-    log_info "          INSTALAÇÃO CONCLUÍDA!         "
-    log_info "===================================================="
+    echo -e "\n${BLUE}===================================================="
+    echo -e "          INSTALAÇÃO CONCLUÍDA!         "
+    echo -e "====================================================${NC}"
     log_success "Sua aplicação Laravel Reverb está pronta!"
-    log_info "\nURLs de Acesso:"
-    log_info "- Aplicação Web (HTTPS): ${GREEN}https://$PROJECT_DOMAIN${NC}"
-    log_info "- WebSocket (WSS): ${GREEN}wss://$PROJECT_DOMAIN/app/${NC} (ou porta 8080 se não estiver usando proxy Nginx para Reverb na 443)"
-    log_info "- PhpMyAdmin: ${GREEN}http://localhost:8081${NC} (acessível apenas do servidor, ou mapeie porta)"
-    log_info "- Mailpit: ${GREEN}http://localhost:8025${NC} (acessível apenas do servidor, ou mapeie porta)"
+    echo -e "\nURLs de Acesso:"
+    echo -e "- Aplicação Web (HTTPS): ${GREEN}https://$PROJECT_DOMAIN${NC}"
+    echo -e "- WebSocket (WSS): ${GREEN}wss://$PROJECT_DOMAIN/app/${NC} (ou porta 8080 se não estiver usando proxy Nginx para Reverb na 443)"
+    echo -e "- PhpMyAdmin: ${GREEN}http://localhost:8081${NC} (acessível apenas do servidor, ou mapeie porta)"
+    echo -e "- Mailpit: ${GREEN}http://localhost:8025${NC} (acessível apenas do servidor, ou mapeie porta)"
 
-    log_info "\nComandos Úteis:"
-    log_info "- Ver status dos serviços: ${BLUE}sudo docker compose ps${NC}"
-    log_info "- Ver logs da aplicação: ${BLUE}sudo docker compose logs laraverb-app${NC}"
-    log_info "- Ver logs de todos os serviços: ${BLUE}sudo docker compose logs${NC}"
-    log_info "- Entrar no contêiner da aplicação: ${BLUE}sudo docker compose exec laraverb-app bash${NC}"
-    log_info "- Derrubar todos os serviços: ${BLUE}sudo docker compose down${NC}"
-    log_info "- Reiniciar todos os serviços: ${BLUE}sudo docker compose restart${NC}"
-    log_info "- Renovar certificado SSL (a cada 90 dias): ${BLUE}sudo docker compose run --rm certbot renew && sudo docker compose exec laraverb-app nginx -s reload${NC}"
-    log_info "\n===================================================="
+    echo -e "\nComandos Úteis:"
+    echo -e "- Ver status dos serviços: ${BLUE}sudo docker compose ps${NC}"
+    echo -e "- Ver logs da aplicação: ${BLUE}sudo docker compose logs laraverb-app${NC}"
+    echo -e "- Ver logs de todos os serviços: ${BLUE}sudo docker compose logs${NC}"
+    echo -e "- Entrar no contêiner da aplicação: ${BLUE}sudo docker compose exec laraverb-app bash${NC}"
+    echo -e "- Derrubar todos os serviços: ${BLUE}sudo docker compose down${NC}"
+    echo -e "- Reiniciar todos os serviços: ${BLUE}sudo docker compose restart${NC}"
+    echo -e "- Renovar certificado SSL (a cada 90 dias): ${BLUE}sudo docker compose run --rm certbot renew && sudo docker compose exec laraverb-app nginx -s reload${NC}"
+    echo -e "\n===================================================="
 }
 
 # --- Fluxo Principal do Script ---
 
-log_info "\n${BLUE}===================================================="
-log_info "  Instalador Automatizado Laravel Reverb com SSL  "
-log_info "====================================================${NC}"
+echo -e "\n${BLUE}===================================================="
+echo -e "  Instalador Automatizado Laravel Reverb com SSL  "
+echo -e "====================================================${NC}"
 
 # Mensagem inicial sobre DNS
-log_warning "\nAntes de prosseguir, certifique-se de que o domínio que você usará\"
-log_warning "já está apontando para o IP público deste servidor no seu provedor de DNS.\"
-log_warning "A propagação do DNS pode levar alguns minutos ou horas.\"
+log_warning "Antes de prosseguir, certifique-se de que o domínio que você usará"
+log_warning "já está apontando para o IP público deste servidor no seu provedor de DNS."
+log_warning "A propagação do DNS pode levar alguns minutos ou horas."
 
-read -p "${YELLOW}Já fez o apontamento do domínio e aguardou a propagação? (s/n): ${NC}" DNS_CONFIRMED
+read -p "$(echo -e "${YELLOW}Já fez o apontamento do domínio e aguardou a propagação? (s/n): ${NC}")" DNS_CONFIRMED
 
 if [[ "$DNS_CONFIRMED" =~ ^[Ss]$ ]]; then
     log_info "Prosseguindo com a instalação..."
