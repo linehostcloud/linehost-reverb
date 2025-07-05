@@ -256,28 +256,126 @@ configure_project_and_ssl() {
     fi
     log_success "Serviços Docker Compose iniciados com sucesso."
 
+    # Aguardar os serviços estarem prontos
+    log_info "Aguardando os serviços estarem prontos..."
+    sleep 15
+
+    # Verificar se os serviços estão funcionando
+    log_info "Verificando status dos serviços..."
+    if docker compose version >/dev/null 2>&1; then
+        sudo docker compose ps
+    else
+        sudo docker-compose ps
+    fi
+
+    # Testar conectividade HTTP antes do SSL
+    log_info "Testando conectividade HTTP para $PROJECT_DOMAIN..."
+    
+    # Teste interno primeiro
+    HTTP_TEST=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost/.well-known/acme-challenge/test" 2>/dev/null || echo "000")
+    if [ "$HTTP_TEST" = "404" ]; then
+        log_success "Servidor HTTP interno respondendo corretamente (404 esperado para teste)."
+    else
+        log_warning "Servidor HTTP interno retornou código: $HTTP_TEST"
+    fi
+    
+    # Teste externo
+    EXTERNAL_TEST=$(curl -s -o /dev/null -w "%{http_code}" "http://$PROJECT_DOMAIN/" 2>/dev/null || echo "000")
+    if [ "$EXTERNAL_TEST" = "200" ] || [ "$EXTERNAL_TEST" = "302" ] || [ "$EXTERNAL_TEST" = "301" ]; then
+        log_success "Domínio $PROJECT_DOMAIN está acessível externamente (código: $EXTERNAL_TEST)."
+    else
+        log_warning "Domínio $PROJECT_DOMAIN retornou código: $EXTERNAL_TEST"
+        log_warning "Isso pode indicar problemas de DNS ou firewall."
+    fi
+
+    # Verificar se a pasta do webroot existe e tem permissões corretas
+    log_info "Verificando configuração do webroot para Certbot..."
+    if docker compose version >/dev/null 2>&1; then
+        sudo docker compose exec laraverb-app ls -la /var/www/certbot/ || {
+            log_warning "Pasta /var/www/certbot/ não encontrada no contêiner."
+            sudo docker compose exec laraverb-app mkdir -p /var/www/certbot/
+            sudo docker compose exec laraverb-app chmod 755 /var/www/certbot/
+        }
+    else
+        sudo docker-compose exec laraverb-app ls -la /var/www/certbot/ || {
+            log_warning "Pasta /var/www/certbot/ não encontrada no contêiner."
+            sudo docker-compose exec laraverb-app mkdir -p /var/www/certbot/
+            sudo docker-compose exec laraverb-app chmod 755 /var/www/certbot/
+        }
+    fi
+
+    # Criar arquivo de teste para verificar acesso ao .well-known
+    log_info "Criando arquivo de teste para verificar acesso ao .well-known..."
+    if docker compose version >/dev/null 2>&1; then
+        sudo docker compose exec laraverb-app mkdir -p /var/www/certbot/.well-known/acme-challenge/
+        sudo docker compose exec laraverb-app bash -c "echo 'test' > /var/www/certbot/.well-known/acme-challenge/test"
+        sudo docker compose exec laraverb-app chmod -R 755 /var/www/certbot/
+    else
+        sudo docker-compose exec laraverb-app mkdir -p /var/www/certbot/.well-known/acme-challenge/
+        sudo docker-compose exec laraverb-app bash -c "echo 'test' > /var/www/certbot/.well-known/acme-challenge/test"
+        sudo docker-compose exec laraverb-app chmod -R 755 /var/www/certbot/
+    fi
+
+    # Testar acesso ao arquivo de teste
+    log_info "Testando acesso ao arquivo de teste..."
+    TEST_ACCESS=$(curl -s "http://$PROJECT_DOMAIN/.well-known/acme-challenge/test" 2>/dev/null || echo "FALHA")
+    if [ "$TEST_ACCESS" = "test" ]; then
+        log_success "Acesso ao .well-known/acme-challenge/ está funcionando!"
+    else
+        log_error "Não foi possível acessar http://$PROJECT_DOMAIN/.well-known/acme-challenge/test"
+        log_error "Resposta: $TEST_ACCESS"
+        log_error "Isso indica um problema de configuração do servidor web ou DNS."
+        log_warning "Possíveis causas:"
+        log_warning "1. DNS não está apontando corretamente para este servidor"
+        log_warning "2. Firewall bloqueando porta 80"
+        log_warning "3. Proxy/CDN (como Cloudflare) interferindo"
+        log_warning "4. Configuração incorreta do Nginx"
+        
+        read -p "$(echo -e "${YELLOW}Deseja continuar mesmo assim? (s/n): ${NC}")" CONTINUE_ANYWAY
+        if [[ ! "$CONTINUE_ANYWAY" =~ ^[Ss]$ ]]; then
+            log_error "Abortando instalação. Corrija os problemas de conectividade primeiro."
+            exit 1
+        fi
+    fi
+
     # Obter certificado SSL com Certbot
     log_info "Obtendo certificado SSL para $PROJECT_DOMAIN com Certbot..."
-    # Aguarda o Nginx estar pronto para o desafio HTTP-01
-    sleep 10
     if docker compose version >/dev/null 2>&1; then
-        sudo docker compose run --rm certbot certonly --webroot -w /var/www/certbot --email admin@$PROJECT_DOMAIN --agree-tos --no-eff-email -d $PROJECT_DOMAIN || {
+        sudo docker compose run --rm certbot certonly --webroot -w /var/www/certbot --email admin@$PROJECT_DOMAIN --agree-tos --no-eff-email -d $PROJECT_DOMAIN --verbose || {
             log_error "Falha ao obter certificado SSL com Certbot. Verifique o apontamento DNS e os logs do Certbot."
             log_info "Tentando novamente em 5 segundos..."
             sleep 5
-            sudo docker compose run --rm certbot certonly --webroot -w /var/www/certbot --email admin@$PROJECT_DOMAIN --agree-tos --no-eff-email -d $PROJECT_DOMAIN || {
-                log_error "Falha persistente ao obter certificado SSL. Por favor, verifique manualmente."
-                exit 1
+            sudo docker compose run --rm certbot certonly --webroot -w /var/www/certbot --email admin@$PROJECT_DOMAIN --agree-tos --no-eff-email -d $PROJECT_DOMAIN --verbose || {
+                log_error "Falha persistente ao obter certificado SSL."
+                log_warning "Você pode tentar obter o certificado manualmente depois com:"
+                log_warning "sudo docker compose run --rm certbot certonly --webroot -w /var/www/certbot --email admin@$PROJECT_DOMAIN --agree-tos --no-eff-email -d $PROJECT_DOMAIN --verbose"
+                
+                read -p "$(echo -e "${YELLOW}Deseja continuar sem SSL? (s/n): ${NC}")" CONTINUE_NO_SSL
+                if [[ "$CONTINUE_NO_SSL" =~ ^[Ss]$ ]]; then
+                    log_warning "Continuando sem SSL. A aplicação estará disponível apenas via HTTP."
+                    return 0
+                else
+                    exit 1
+                fi
             }
         }
     else
-        sudo docker-compose run --rm certbot certonly --webroot -w /var/www/certbot --email admin@$PROJECT_DOMAIN --agree-tos --no-eff-email -d $PROJECT_DOMAIN || {
+        sudo docker-compose run --rm certbot certonly --webroot -w /var/www/certbot --email admin@$PROJECT_DOMAIN --agree-tos --no-eff-email -d $PROJECT_DOMAIN --verbose || {
             log_error "Falha ao obter certificado SSL com Certbot. Verifique o apontamento DNS e os logs do Certbot."
             log_info "Tentando novamente em 5 segundos..."
             sleep 5
-            sudo docker-compose run --rm certbot certonly --webroot -w /var/www/certbot --email admin@$PROJECT_DOMAIN --agree-tos --no-eff-email -d $PROJECT_DOMAIN || {
-                log_error "Falha persistente ao obter certificado SSL. Por favor, verifique manualmente."
-                exit 1
+            sudo docker-compose run --rm certbot certonly --webroot -w /var/www/certbot --email admin@$PROJECT_DOMAIN --agree-tos --no-eff-email -d $PROJECT_DOMAIN --verbose || {
+                log_error "Falha persistente ao obter certificado SSL."
+                log_warning "Você pode tentar obter o certificado manualmente depois com:"
+                log_warning "sudo docker-compose run --rm certbot certonly --webroot -w /var/www/certbot --email admin@$PROJECT_DOMAIN --agree-tos --no-eff-email -d $PROJECT_DOMAIN --verbose"
+                
+                read -p "$(echo -e "${YELLOW}Deseja continuar sem SSL? (s/n): ${NC}")" CONTINUE_NO_SSL
+                if [[ "$CONTINUE_NO_SSL" =~ ^[Ss]$ ]]; then
+                    log_warning "Continuando sem SSL. A aplicação estará disponível apenas via HTTP."
+                    return 0
+                else
+                    exit 1
+                fi
             }
         }
     fi
