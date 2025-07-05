@@ -47,7 +47,7 @@ Uma solução completa e otimizada para executar **Laravel Reverb** (WebSocket s
 ### 1. Clone o repositório
 
 ```bash
-git clone https://github.com/mrkindy/laraverb.git
+git clone https://github.com/linehostcloud/linehost-reverb.git
 cd laraverb
 ```
 
@@ -272,7 +272,7 @@ O sistema inclui verificações automáticas de saúde:
 
 ```bash
 # Clone em servidor de produção
-git clone https://github.com/mrkindy/laraverb.git
+git clone https://github.com/linehostcloud/linehost-reverb.git
 cd laraverb
 
 # Configure ambiente
@@ -374,19 +374,6 @@ echo.channel('test-channel')
 
 Este projeto está licenciado sob a Licença MIT - veja o arquivo [LICENSE](LICENSE) para detalhes.
 
-## 👨‍💻 Créditos
-
-- **Ibrahim Abotaleb** - Criador original
-- **Comunidade Laravel** - Framework e Reverb
-- **Comunidade Docker** - Containerização
-
-## 📞 Suporte
-
-- 🐛 **Issues**: [GitHub Issues](https://github.com/mrkindy/laraverb/issues)
-- 📧 **Email**: [Contato](mailto:your-email@example.com)
-- 💬 **Discord**: [Laravel Brasil](https://discord.gg/laravel-brasil)
-
----
 
 ⭐ **Se este projeto foi útil, considere dar uma estrela no GitHub!**
 
