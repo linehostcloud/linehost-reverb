@@ -26,6 +26,21 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Função para verificar Docker Compose
+check_docker_compose() {
+    # Verifica se docker compose (plugin) está disponível
+    if docker compose version >/dev/null 2>&1; then
+        return 0
+    fi
+    
+    # Verifica se docker-compose (standalone) está disponível
+    if command_exists docker-compose; then
+        return 0
+    fi
+    
+    return 1
+}
+
 # Função para instalar Docker
 install_docker() {
     log_info "Verificando e instalando Docker e Docker Compose..."
@@ -55,12 +70,71 @@ install_docker() {
         log_success "Docker já está instalado."
     fi
 
-    if ! command_exists docker-compose && ! command_exists "docker compose"; then
-        log_error "Docker Compose não encontrado. Ele deveria ter sido instalado com o Docker Engine."
-        exit 1
+    # Verificar Docker Compose
+    if ! check_docker_compose; then
+        log_warning "Docker Compose não encontrado. Tentando instalar..."
+        
+        # Tentar instalar o plugin docker-compose
+        log_info "Tentando instalar docker-compose-plugin..."
+        sudo apt update
+        sudo apt install -y docker-compose-plugin
+        
+        # Se ainda não funcionar, instalar a versão standalone
+        if ! check_docker_compose; then
+            log_info "Instalando Docker Compose standalone..."
+            DOCKER_COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep 'tag_name' | cut -d\" -f4)
+            sudo curl -L "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+            sudo chmod +x /usr/local/bin/docker-compose
+            
+            # Verificar se foi instalado com sucesso
+            if ! check_docker_compose; then
+                log_error "Falha ao instalar Docker Compose. Por favor, instale manualmente."
+                exit 1
+            fi
+        fi
+        
+        log_success "Docker Compose instalado com sucesso!"
     else
         log_success "Docker Compose já está instalado."
+        # Mostrar qual versão está sendo usada
+        if docker compose version >/dev/null 2>&1; then
+            COMPOSE_VERSION=$(docker compose version --short 2>/dev/null || echo "unknown")
+            log_info "Usando Docker Compose plugin v${COMPOSE_VERSION}"
+        elif command_exists docker-compose; then
+            COMPOSE_VERSION=$(docker-compose version --short 2>/dev/null || echo "unknown")
+            log_info "Usando Docker Compose standalone v${COMPOSE_VERSION}"
+        fi
     fi
+}
+
+# Função para detectar IP público
+get_public_ip() {
+    # Tentar diferentes métodos para obter o IP público
+    local public_ip
+    
+    # Método 1: curl para serviços externos
+    public_ip=$(curl -s https://ipinfo.io/ip 2>/dev/null)
+    if [[ $public_ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        echo "$public_ip"
+        return 0
+    fi
+    
+    # Método 2: alternativa
+    public_ip=$(curl -s https://api.ipify.org 2>/dev/null)
+    if [[ $public_ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        echo "$public_ip"
+        return 0
+    fi
+    
+    # Método 3: verificar interfaces de rede locais (IP público provável)
+    public_ip=$(ip route get 8.8.8.8 | awk '{print $7}' | head -1 2>/dev/null)
+    if [[ $public_ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        echo "$public_ip"
+        return 0
+    fi
+    
+    # Se nenhum método funcionou, retornar erro
+    return 1
 }
 
 # Função para inicializar Docker Swarm
@@ -68,10 +142,44 @@ init_swarm() {
     log_info "Verificando e inicializando Docker Swarm..."
     if ! sudo docker info | grep -q "Swarm: active"; then
         log_info "Docker Swarm não está ativo. Inicializando..."
-        sudo docker swarm init || {
-            log_error "Falha ao inicializar Docker Swarm."
-            exit 1
-        }
+        
+        # Detectar IP público automaticamente
+        PUBLIC_IP=$(get_public_ip)
+        if [ $? -eq 0 ] && [ -n "$PUBLIC_IP" ]; then
+            log_info "IP público detectado: $PUBLIC_IP"
+            sudo docker swarm init --advertise-addr "$PUBLIC_IP" || {
+                log_error "Falha ao inicializar Docker Swarm com IP $PUBLIC_IP."
+                log_info "Tentando com IP da interface eth0..."
+                ETH0_IP=$(ip addr show eth0 | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
+                if [ -n "$ETH0_IP" ]; then
+                    sudo docker swarm init --advertise-addr "$ETH0_IP" || {
+                        log_error "Falha ao inicializar Docker Swarm com IP $ETH0_IP."
+                        log_warning "Por favor, execute manualmente: sudo docker swarm init --advertise-addr <SEU_IP_PUBLICO>"
+                        exit 1
+                    }
+                else
+                    log_error "Não foi possível detectar IP da interface eth0."
+                    exit 1
+                fi
+            }
+        else
+            log_warning "Não foi possível detectar o IP público automaticamente."
+            log_info "Tentando com IP da interface eth0..."
+            ETH0_IP=$(ip addr show eth0 | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
+            if [ -n "$ETH0_IP" ]; then
+                log_info "IP da interface eth0 detectado: $ETH0_IP"
+                sudo docker swarm init --advertise-addr "$ETH0_IP" || {
+                    log_error "Falha ao inicializar Docker Swarm com IP $ETH0_IP."
+                    log_warning "Por favor, execute manualmente: sudo docker swarm init --advertise-addr <SEU_IP_PUBLICO>"
+                    exit 1
+                }
+            else
+                log_error "Não foi possível detectar IP da interface eth0."
+                log_warning "Por favor, execute manualmente: sudo docker swarm init --advertise-addr <SEU_IP_PUBLICO>"
+                exit 1
+            fi
+        fi
+        
         log_success "Docker Swarm inicializado com sucesso!"
     else
         log_success "Docker Swarm já está ativo."
@@ -125,58 +233,109 @@ configure_project_and_ssl() {
 
     # Derrubar serviços existentes para liberar portas
     log_info "Derrubando serviços Docker Compose existentes para liberar portas..."
-    sudo docker compose down
+    if check_docker_compose; then
+        if docker compose version >/dev/null 2>&1; then
+            sudo docker compose down
+        else
+            sudo docker-compose down
+        fi
+    fi
 
     # Construir e subir os serviços
     log_info "Construindo e subindo os serviços Docker Compose..."
-    sudo docker compose up -d --build || {
-        log_error "Falha ao construir e subir os serviços Docker Compose."
-        exit 1
-    }
+    if docker compose version >/dev/null 2>&1; then
+        sudo docker compose up -d --build || {
+            log_error "Falha ao construir e subir os serviços Docker Compose."
+            exit 1
+        }
+    else
+        sudo docker-compose up -d --build || {
+            log_error "Falha ao construir e subir os serviços Docker Compose."
+            exit 1
+        }
+    fi
     log_success "Serviços Docker Compose iniciados com sucesso."
 
     # Obter certificado SSL com Certbot
     log_info "Obtendo certificado SSL para $PROJECT_DOMAIN com Certbot..."
     # Aguarda o Nginx estar pronto para o desafio HTTP-01
     sleep 10
-    sudo docker compose run --rm certbot certonly --webroot -w /var/www/certbot --email admin@$PROJECT_DOMAIN --agree-tos --no-eff-email -d $PROJECT_DOMAIN || {
-        log_error "Falha ao obter certificado SSL com Certbot. Verifique o apontamento DNS e os logs do Certbot."
-        log_info "Tentando novamente em 5 segundos..."
-        sleep 5
+    if docker compose version >/dev/null 2>&1; then
         sudo docker compose run --rm certbot certonly --webroot -w /var/www/certbot --email admin@$PROJECT_DOMAIN --agree-tos --no-eff-email -d $PROJECT_DOMAIN || {
-            log_error "Falha persistente ao obter certificado SSL. Por favor, verifique manualmente."
-            exit 1
+            log_error "Falha ao obter certificado SSL com Certbot. Verifique o apontamento DNS e os logs do Certbot."
+            log_info "Tentando novamente em 5 segundos..."
+            sleep 5
+            sudo docker compose run --rm certbot certonly --webroot -w /var/www/certbot --email admin@$PROJECT_DOMAIN --agree-tos --no-eff-email -d $PROJECT_DOMAIN || {
+                log_error "Falha persistente ao obter certificado SSL. Por favor, verifique manualmente."
+                exit 1
+            }
         }
-    }
+    else
+        sudo docker-compose run --rm certbot certonly --webroot -w /var/www/certbot --email admin@$PROJECT_DOMAIN --agree-tos --no-eff-email -d $PROJECT_DOMAIN || {
+            log_error "Falha ao obter certificado SSL com Certbot. Verifique o apontamento DNS e os logs do Certbot."
+            log_info "Tentando novamente em 5 segundos..."
+            sleep 5
+            sudo docker-compose run --rm certbot certonly --webroot -w /var/www/certbot --email admin@$PROJECT_DOMAIN --agree-tos --no-eff-email -d $PROJECT_DOMAIN || {
+                log_error "Falha persistente ao obter certificado SSL. Por favor, verifique manualmente."
+                exit 1
+            }
+        }
+    fi
     log_success "Certificado SSL obtido com sucesso para $PROJECT_DOMAIN."
 
     # Reiniciar Nginx para carregar o novo certificado
     log_info "Reiniciando Nginx para carregar o novo certificado SSL..."
-    sudo docker compose exec laraverb-app nginx -s reload || {
-        log_error "Falha ao reiniciar Nginx."
-        exit 1
-    }
+    if docker compose version >/dev/null 2>&1; then
+        sudo docker compose exec laraverb-app nginx -s reload || {
+            log_error "Falha ao reiniciar Nginx."
+            exit 1
+        }
+    else
+        sudo docker-compose exec laraverb-app nginx -s reload || {
+            log_error "Falha ao reiniciar Nginx."
+            exit 1
+        }
+    fi
     log_success "Nginx reiniciado com sucesso."
 
     # Gerar APP_KEY e executar migrações
     log_info "Gerando APP_KEY do Laravel e executando migrações..."
-    sudo docker compose exec laraverb-app php artisan key:generate --force || {
-        log_error "Falha ao gerar APP_KEY."
-        exit 1
-    }
-    sudo docker compose exec laraverb-app php artisan migrate --force || {
-        log_error "Falha ao executar migrações do Laravel."
-        exit 1
-    }
+    if docker compose version >/dev/null 2>&1; then
+        sudo docker compose exec laraverb-app php artisan key:generate --force || {
+            log_error "Falha ao gerar APP_KEY."
+            exit 1
+        }
+        sudo docker compose exec laraverb-app php artisan migrate --force || {
+            log_error "Falha ao executar migrações do Laravel."
+            exit 1
+        }
+    else
+        sudo docker-compose exec laraverb-app php artisan key:generate --force || {
+            log_error "Falha ao gerar APP_KEY."
+            exit 1
+        }
+        sudo docker-compose exec laraverb-app php artisan migrate --force || {
+            log_error "Falha ao executar migrações do Laravel."
+            exit 1
+        }
+    fi
     log_success "APP_KEY gerada e migrações executadas."
 
     # Limpar e otimizar caches do Laravel
     log_info "Limpando e otimizando caches do Laravel..."
-    sudo docker compose exec laraverb-app php artisan config:clear
-    sudo docker compose exec laraverb-app php artisan cache:clear
-    sudo docker compose exec laraverb-app php artisan view:clear
-    sudo docker compose exec laraverb-app php artisan route:clear
-    sudo docker compose exec laraverb-app php artisan optimize
+    if docker compose version >/dev/null 2>&1; then
+        sudo docker compose exec laraverb-app php artisan config:clear
+        sudo docker compose exec laraverb-app php artisan cache:clear
+        sudo docker compose exec laraverb-app php artisan view:clear
+        sudo docker compose exec laraverb-app php artisan route:clear
+        sudo docker compose exec laraverb-app php artisan optimize
+    else
+        sudo docker-compose exec laraverb-app php artisan config:clear
+        sudo docker-compose exec laraverb-app php artisan cache:clear
+        sudo docker-compose exec laraverb-app php artisan view:clear
+        sudo docker-compose exec laraverb-app php artisan route:clear
+        sudo docker-compose exec laraverb-app php artisan optimize
+    fi
     log_success "Caches do Laravel limpos e otimizados."
 }
 
@@ -193,13 +352,23 @@ display_final_info() {
     echo -e "- Mailpit: ${GREEN}http://localhost:8025${NC} (acessível apenas do servidor, ou mapeie porta)"
 
     echo -e "\nComandos Úteis:"
-    echo -e "- Ver status dos serviços: ${BLUE}sudo docker compose ps${NC}"
-    echo -e "- Ver logs da aplicação: ${BLUE}sudo docker compose logs laraverb-app${NC}"
-    echo -e "- Ver logs de todos os serviços: ${BLUE}sudo docker compose logs${NC}"
-    echo -e "- Entrar no contêiner da aplicação: ${BLUE}sudo docker compose exec laraverb-app bash${NC}"
-    echo -e "- Derrubar todos os serviços: ${BLUE}sudo docker compose down${NC}"
-    echo -e "- Reiniciar todos os serviços: ${BLUE}sudo docker compose restart${NC}"
-    echo -e "- Renovar certificado SSL (a cada 90 dias): ${BLUE}sudo docker compose run --rm certbot renew && sudo docker compose exec laraverb-app nginx -s reload${NC}"
+    if docker compose version >/dev/null 2>&1; then
+        echo -e "- Ver status dos serviços: ${BLUE}sudo docker compose ps${NC}"
+        echo -e "- Ver logs da aplicação: ${BLUE}sudo docker compose logs laraverb-app${NC}"
+        echo -e "- Ver logs de todos os serviços: ${BLUE}sudo docker compose logs${NC}"
+        echo -e "- Entrar no contêiner da aplicação: ${BLUE}sudo docker compose exec laraverb-app bash${NC}"
+        echo -e "- Derrubar todos os serviços: ${BLUE}sudo docker compose down${NC}"
+        echo -e "- Reiniciar todos os serviços: ${BLUE}sudo docker compose restart${NC}"
+        echo -e "- Renovar certificado SSL (a cada 90 dias): ${BLUE}sudo docker compose run --rm certbot renew && sudo docker compose exec laraverb-app nginx -s reload${NC}"
+    else
+        echo -e "- Ver status dos serviços: ${BLUE}sudo docker-compose ps${NC}"
+        echo -e "- Ver logs da aplicação: ${BLUE}sudo docker-compose logs laraverb-app${NC}"
+        echo -e "- Ver logs de todos os serviços: ${BLUE}sudo docker-compose logs${NC}"
+        echo -e "- Entrar no contêiner da aplicação: ${BLUE}sudo docker-compose exec laraverb-app bash${NC}"
+        echo -e "- Derrubar todos os serviços: ${BLUE}sudo docker-compose down${NC}"
+        echo -e "- Reiniciar todos os serviços: ${BLUE}sudo docker-compose restart${NC}"
+        echo -e "- Renovar certificado SSL (a cada 90 dias): ${BLUE}sudo docker-compose run --rm certbot renew && sudo docker-compose exec laraverb-app nginx -s reload${NC}"
+    fi
     echo -e "\n===================================================="
 }
 
